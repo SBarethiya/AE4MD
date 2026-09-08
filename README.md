@@ -56,6 +56,7 @@ python Input_generation.py \
   --n_frame 1000 \
   --align_selection "protein" \
   --n_workers 4
+  --add_padding_indicator True
 ```
 
 ### Key arguments
@@ -73,6 +74,7 @@ python Input_generation.py \
 | `--start`            | int    | Starting frame index for sampling                                            |
 | `--padding`          | str    | If systems differ in atom count, pad with zeros (`"True"`) or leave as-is (`"False"`, default) |
 | `--n_workers`        | int    | Number of parallel worker processes (default: all CPU cores)                 |
+| `--add_padding_indicator` | bool | dd a padding indicator column (1 for padded, 0 for not padded)            |
 
 Each frame is tagged with an extra trailing channel holding its system index (0 for the first line in `--input_list`, 1 for the second, etc.), so the
 output array has shape `(n_frames_total, n_atoms, 4)` — not `(n_frames, n_atoms, 3)`. See *Known limitations* for how this needs to be reconciled with what `main.py` expects.
@@ -96,7 +98,11 @@ python main.py \
   --HIDDEN_DIMS "[[64, 128], [32, 64, 128]]" \
   --LEARNING_RATE "[0.001, 0.0001]" \
   --EPOCHS "[100, 200]" \
-  --scalar_type standard
+  --scalar_type standard \
+  --seed 42 \
+  --lr_step_size 100 \
+  --lr_gamma 0.5 \
+  --activation relu
 ```
 
 ### Key arguments
@@ -113,6 +119,9 @@ python main.py \
 | `--EPOCHS`        | list[int]      | Epoch counts to sweep                                                   |
 | `--scalar_type`   | `standard` \| `minmax` \| `none` | Feature scaling applied before training               |
 | `--seed`          | int            | Random seed for the train/test split and model init                     |
+| `--lr_step_size`  | int            | Number of epochs between learning-rate scheduler steps                  |
+| `--lr_gamma`      | float          | Multiplicative factor applied by the learning-rate scheduler            |
+| `--activation`    | str            | Activation function used by the autoencoder; default relu               |
 
 List-valued arguments must be valid Python list syntax and quoted so your
 shell passes them through intact:

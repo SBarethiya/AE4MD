@@ -1,20 +1,27 @@
 --output_dir
-data/new_input
---scalar
-standard
+data/input/core/FRAME_NUMBER
 --seed
 42
+--train_test_split
+0.7
 --save_file_name
-new_input
+FRAME_NUMBER
+--lr_step_size
+500
 --BATCH_SIZE
 [64]
 --LATENT_DIM
-[8]
+[2, 4, 16]
 --NUM_HIDDEN_LAYER
 [2]
 --HIDDEN_DIMS
-[[100, 100]]
+[[1000, 100], [1000, 500], [500, 100], [500, 500], [100, 100]]
 --LEARNING_RATE
-[0.0001]
+[0.005]
 --EPOCHS
-[20]
+[5000]
+--activation
+relu
+sigmoid
+tanh
+gelu

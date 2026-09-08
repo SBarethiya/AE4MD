@@ -1,16 +1,22 @@
 --input_list
-data/input/input_list.txt
+data/input/input_list.csv
 --input_dir
 ./systems/
 --output_dir
-data/new_input
+data/input/
 --type
 CA
---seed
-42
 --n_frame
-1000
+FRAME_NUMBER
 --start
 25000
 --save_file_name
 new_input
+--padding
+True
+--input_selection
+protein and name CA
+--align_selection
+protein and name CA
+--n_workers
+2
