@@ -5,7 +5,7 @@ from MDAnalysis.coordinates.memory import MemoryReader
 
 import numpy as np
 import pandas as pd
-import argparse, os, pickle
+import argparse, os, pickle, re
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 from typing import Optional, Tuple
@@ -363,24 +363,35 @@ else:
             end_index = int(input_list.loc[input_index, "End"] - min_start +1 )
             if not pd.isna(missing_residues[input_index]):
                 missing_residue = missing_residues[input_index]
-                a, b = map(int, missing_residue.split(','))
-                start_missing = a - min_start - 1
-                end_missing = b - min_start - 1
+                pairs = re.findall(r'\[(\d+),(\d+)\]', missing_residue)
+
+                if not pairs:
+                    # Handle original format: "21,34"
+                    a, b = map(int, missing_residue.split(','))
+                    pairs = [(a, b)]
+
+                # Convert all pairs to array indices
+                missing_ranges = [(int(a) - min_start - 1, int(b) - min_start - 1) for a, b in pairs]
 
             else:
                 missing_residue = 0
+                missing_ranges = []
 
             if args.add_padding_indicator:
                 padded_array[i, start_index:end_index, :-2] = seq[:, :-1]
                 padded_array[i, start_index:end_index, -1] = seq[:, -1]
                 padded_array[i, start_index:end_index, -2] = 1
-                if missing_residue != 0:
+
+                # Zero out all missing ranges
+                for start_missing, end_missing in missing_ranges:
                     padded_array[i, start_missing:end_missing, :] = 0
-            
+
             else:
                 padded_array[i, start_index:end_index, :-1] = seq[:, :-1]
                 padded_array[i, start_index:end_index, -1] = seq[:, -1]
-                if missing_residue != 0:
+
+                # Zero out all missing ranges
+                for start_missing, end_missing in missing_ranges:
                     padded_array[i, start_missing:end_missing, :] = 0
             final_array[i] = None
         
