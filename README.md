@@ -33,11 +33,11 @@ Turns one or more raw trajectories into a single coordinate array, run in parall
 
 ### Expected input layout
 
-A text file (`--input_list`) with one system name per line:
+A text file (`--input_list`) with one system name per line as csv file:
 
 ```
-sysA
-sysB
+8pk2,13,100,"21,34",P020
+9jby,3,98,,P020
 ```
 
 For each name, `--input_dir` must contain either `{name}.psf` + (`{name}.xtc` or `{name}.dcd`), or a subdirectory `{name}/` containing one `.psf` and one
@@ -57,6 +57,8 @@ python Input_generation.py \
   --align_selection "protein" \
   --n_workers 4
   --add_padding_indicator True
+  --padding direct
+  --input_selection protein and name CA
 ```
 
 ### Key arguments
