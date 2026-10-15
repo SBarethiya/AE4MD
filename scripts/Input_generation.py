@@ -6,7 +6,7 @@ from MDAnalysis.coordinates.memory import MemoryReader
 import numpy as np
 import pandas as pd
 import argparse, os, pickle
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 from typing import Optional, Tuple
 
@@ -24,6 +24,8 @@ parser.add_argument("--input_selection", help="selection for input mainly the pa
 parser.add_argument("--type", help="type of atoms to select (CA, backbone, heavy, dihedral, internal_coordinates)", required=False, default="CA")
 parser.add_argument("--n_frame", help="number of frames to select (format: int)", required=False, default="None")
 parser.add_argument("--start", help="starting frame index (format: int)", required=False, default=0)
+parser.add_argument("--start_residue", help="starting residue index (format: int)", required=False)
+parser.add_argument("--end_residue", help="ending residue index (format: int)", required=False)
 parser.add_argument("--n_workers", help="number of worker processes (format: int, default: all CPUs)", required=False, type=int, default=os.cpu_count())
 parser.add_argument("--add_padding_indicator", help="Add a padding indicator column (1 for padded, 0 for not padded)", action="store_true", default=False)
 args = parser.parse_args()
@@ -177,6 +179,7 @@ def process_one_input(
     idx_name: pd.DataFrame,
     idx_start:  pd.DataFrame,
     idx_end: pd.DataFrame,
+    segid: int,
     ref_positions_all: Optional[np.ndarray],
     ref_segids: Optional[np.ndarray],
     unique_ref_segids: Optional[list],
@@ -201,6 +204,7 @@ def process_one_input(
     idx, name = idx_name
     _, resid_start = idx_start
     _, resid_end = idx_end
+    _, segid = segid
 
     print(f"Processing {name}...")
     #find psf
@@ -220,35 +224,41 @@ def process_one_input(
     except Exception as e:
         print(f"ERROR: Failed to load Universe for {name}. Skipping. Error: {e}")
         return idx, None
+    
     n_frame = len(u.trajectory) if n_frame_arg == "None" else int(n_frame_arg)
-    if len(u.trajectory) < start:
+    if len(u.trajectory) < start or len(u.trajectory) < int(start+n_frame):
         print(f"WARNING: n_frame ({len(u.trajectory)}) is less than start ({start}) for {name}. Skipping.")
         return idx, None
+    
     selected_indices = np.linspace(start, len(u.trajectory) - 1, n_frame, dtype=int)
     u = subsample_to_memory(u, selected_indices)
     if align_selection:
-        mobile_atoms_for_matching = u.select_atoms(align_selection)
+        align_selection_final = align_selection + " and segid " + str(segid)
+        mobile_atoms_for_matching = u.select_atoms(align_selection_final)
         if mobile_atoms_for_matching.n_atoms != len(ref_positions_all) or ref_segids is not None:
             this_ref_positions = match_reference_chains(mobile_atoms_for_matching, ref_positions_all, ref_segids, unique_ref_segids)
         else: 
             this_ref_positions = ref_positions_all
+        u = align_trajectories(u, this_ref_positions, idx, align_selection_final)
+        # pull the xyz coordinates for selected atom/frame
+        if resid_start:
+            resid_selection = f"resid {resid_start} to {resid_end}"
+            if input_selection != "None":
+                resid_selection = resid_selection + " and " + input_selection + " and segid " + str(segid) 
+        else:
+            if input_selection != "None":
+                resid_selection = input_selection + " and segid " + str(segid) 
+            else:
+                resid_selection = "protein"
+        xyz_array = get_xyz(u, atom_type, resid_selection)
+        # tag every entry with the system index in a new trailing channel
+        xyz_array = np.concatenate((xyz_array, np.full((xyz_array.shape[0], xyz_array.shape[1], 1), idx)), axis=2,)
 
-        u = align_trajectories(u, this_ref_positions, idx, align_selection)
-
-    # pull the xyz coordinates for selected atom/frame
-    resid_selection = f"resid {resid_start} to {resid_end}"
-    if input_selection != "None":
-        resid_selection = resid_selection + " and " + input_selection
-
-    xyz_array = get_xyz(u, atom_type, resid_selection)
-
-    # tag every entry with the system index in a new trailing channel
-    xyz_array = np.concatenate((xyz_array, np.full((xyz_array.shape[0], xyz_array.shape[1], 1), idx)), axis=2,)
-    print(f"xyz_array shape: {xyz_array.shape}")
     return idx, xyz_array
 
 # input_list = np.loadtxt(args.input_list, dtype=str)
-input_list = pd.read_csv(args.input_list, names=["Name", "Start", "End"])
+input_list = pd.read_csv(args.input_list, names=["Name", "Start", "End", "Missing", "Segid"], header=None)
+print(input_list)
 print(f"Total number of sequences in the file: {len(input_list)}")
 
 input_dir = args.input_dir
@@ -263,9 +273,11 @@ if args.align_selection != "None":
     selected_indices = np.linspace(len(args.start), len(u_ref.trajectory) - 1, len(args.n_frame), dtype=int)
     u_ref = subsample_to_memory(u_ref, selected_indices)
     u_ref.trajectory[0]
-
-    ref_atoms_all = u_ref.select_atoms(args.align_selection)
-    ref_positions_all = u_ref.select_atoms(args.align_selection).positions.copy()
+    final_align_selection = args.align_selection + " and segid " + str(input_list["Segid"][0])
+    print(f"Aligning to reference structure using selection: {final_align_selection}")
+    ref_atoms_all = u_ref.select_atoms(final_align_selection)
+    print(f"Reference atoms selected for alignment: {ref_atoms_all.n_atoms} atoms")
+    ref_positions_all = u_ref.select_atoms(final_align_selection).positions.copy()
 
     # check if there are multiple segids in the selection
     if len(ref_atoms_all.segments) > 1:        
@@ -279,9 +291,7 @@ if args.align_selection != "None":
     else:
         ref_segids = None
         unique_ref_segids = None
-    # save out the reference positions for later use as pdb
-    # with mda.Writer(f"{output_dir}/reference_positions.pdb", n_atoms=len(ref_atoms_all)) as W:
-    #     W.write(ref_atoms_all)
+
     del u_ref
 else:
     ref_positions = None
@@ -299,12 +309,18 @@ worker = partial(
     n_frame_arg=args.n_frame,
 )
 
+if args.start_residue is not None and args.end_residue is not None:
+    input_list["Start"] = args.start_residue
+    input_list["End"] = args.end_residue
+
+# Do multiprocessing to process each input in parallel and if any of the input fails, it will be skipped and the rest will be processed
 with ProcessPoolExecutor(max_workers=args.n_workers) as executor:
-    results = list(executor.map(worker, enumerate(input_list["Name"]), enumerate(input_list["Start"]), enumerate(input_list["End"])))
- 
+    results = list(executor.map(worker, enumerate(input_list["Name"]), enumerate(input_list["Start"]), enumerate(input_list["End"]), enumerate(input_list["Segid"])))
+
 final_array = []
 sequence_lengths = []
 for idx, xyz_array in results:
+    print(xyz_array.shape)
     if xyz_array is None:
         continue
     final_array.extend(xyz_array)
@@ -325,12 +341,56 @@ else:
         print("Padding is False, please make sure batches are of the same length...\n")
         padded_array = None
 
+    elif args.padding == "direct":
+        print("\nWARNING: All sequences have different lengths, adding padding to the sequences with start and end indices using the input_list")
+        num_seqs = len(final_array)
+        num_features = final_array[0].shape[1]
+        if args.add_padding_indicator:
+            num_features += 1
+
+        missing_residues = input_list["Missing"].values
+        min_start = input_list["Start"].min()
+        max_end = input_list["End"].max()
+
+        max_length = max_end - min_start + 1
+
+        padded_array = np.zeros((num_seqs, max_length, num_features), dtype=np.float32)
+        print(f"Create padded array with zero element of shape {padded_array.shape}\n")
+
+        for i, seq in enumerate(final_array):
+            input_index = int(seq[-1,-1])
+            start_index = int(input_list.loc[input_index, "Start"] - min_start)
+            end_index = int(input_list.loc[input_index, "End"] - min_start +1 )
+            if not pd.isna(missing_residues[input_index]):
+                missing_residue = missing_residues[input_index]
+                a, b = map(int, missing_residue.split(','))
+                start_missing = a - min_start - 1
+                end_missing = b - min_start - 1
+
+            else:
+                missing_residue = 0
+
+            if args.add_padding_indicator:
+                padded_array[i, start_index:end_index, :-2] = seq[:, :-1]
+                padded_array[i, start_index:end_index, -1] = seq[:, -1]
+                padded_array[i, start_index:end_index, -2] = 1
+                if missing_residue != 0:
+                    padded_array[i, start_missing:end_missing, :] = 0
+            
+            else:
+                padded_array[i, start_index:end_index, :-1] = seq[:, :-1]
+                padded_array[i, start_index:end_index, -1] = seq[:, -1]
+                if missing_residue != 0:
+                    padded_array[i, start_missing:end_missing, :] = 0
+            final_array[i] = None
+        
     else:
         ## Get the maximum length of the sequences with start and end indices using the input_list
         print("\nWARNING: All sequences have different lengths.")
         max_length = max(sequence_lengths)
         num_seqs = len(final_array)
         num_features = final_array[0].shape[1]
+
         if args.add_padding_indicator:
             num_features += 1
 
@@ -338,28 +398,16 @@ else:
         padded_array = np.zeros((num_seqs, max_length, num_features), dtype=np.float32)
         print(f"Create padded array with zero element of shape {padded_array.shape}\n")
 
-        # input_list["Length"] = input_list["End"] - input_list["Start"] + 1
-        # max_start = input_list[input_list["Length"] == max_length]["Start"].values[0]
-        # max_end = input_list[input_list["Length"] == max_length]["End"].values[0]
-
         for i, seq in enumerate(final_array):
+            input_index = int(seq[-1,-1])
             # Add another column to indicate if the coordinates are padded or not (1 for padded, 0 for not padded)
             if args.add_padding_indicator:
-                # Rmove the last column (index) from seq before padding
                 padded_array[i, :seq.shape[0], :-2] = seq[:, :-1]
-                padded_array[i, seq.shape[0]:, -2] = 1  # Mark padded entries with 1
-                # Add last index column back to the padded array
+                padded_array[i, seq.shape[0]:, -2] = 1
                 padded_array[i, :seq.shape[0], -1] = seq[:, -1]
             else:
                 padded_array[i, :seq.shape[0], :] = seq
-
-
             final_array[i] = None
-            # idx = int(seq[0, 3])   # index stored in the 4th dimension
-            # start = int(input_list.loc[idx, "Start"] - max_start)
-            # end = int(input_list.loc[idx, "End"] - max_start)
-            # print(f"Padding sequence {i} with index {idx}, start: {start}, end: {end}, shape: {seq.shape}, padded_array shape: {padded_array.shape}, max_start: {max_start}, max_end: {max_end}")   
-            # padded_array[i, start:end + 1, :] = seq
 
 if padded_array is not None:
     print(f"\nSaving final_array to {output_dir}/{file_name}.pkl with shape {np.array(padded_array).shape}...")
